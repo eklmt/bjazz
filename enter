@@ -1,0 +1,82 @@
+
+#!/bin/zsh
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+setopt extendedglob
+
+# Username
+u=${1:=ekl}
+
+# Mount stuff is put relative to the script
+p=~/.bjazz/$u
+
+mkdir -p $p/root $p/home
+
+uid=${uid:=1000}
+gid=${gid:=1000}
+
+args=(
+	bwrap
+	--die-with-parent
+	--unshare-all --share-net
+	--uid $uid --gid $gid
+	--clearenv
+	--dev-bind $p/root /
+	--proc /proc
+	--tmpfs /tmp
+	--tmpfs $XDG_RUNTIME_DIR
+)
+
+mounts=(
+	$XAUTHORITY
+	$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY
+	$XDG_RUNTIME_DIR/pipewire-0
+	$XDG_RUNTIME_DIR/pulse
+	/(*~tmp~run~proc~root)/
+	/run/(*~user~ostree-booted)/ # ostree-booted causes some issues with profiles.d
+)
+
+for mount in $mounts; do
+	args+=(--dev-bind $mount $mount)
+done
+
+# Home setup
+args+=(
+	--dev-bind $p/home /home
+	--dev-bind ~/.Xauthority /home/$u/.Xauthority # Required for X11 to work
+	--chdir /home/$u
+)
+
+# Env vars
+shared=(
+	DISPLAY WAYLAND_DISPLAY XAUTHORITY
+	TERM LANG
+	DESKTOP_SESSION
+	XDG_RUNTIME_DIR
+	XDG_CURRENT_DESKTOP
+	XDG_SESSION_DESKTOP
+	XDG_SESSION_TYPE
+)
+for share in $shared; do
+	if [ -v $share ]; then
+		args+=(--setenv $share ${(P)share})
+	fi
+done
+
+# Override the username/group
+[ -e $p/passwd ] || <<EOF >$p/passwd
+$u::$uid:$gid::/home/$u:/bin/zsh
+EOF
+
+[ -e $p/group ] || <<EOF >$p/group
+$u:x:$gid:
+EOF
+
+args+=(
+	--dev-bind $p/passwd /etc/passwd
+	--dev-bind $p/group /etc/group
+)
+
+args+=(dbus-run-session -- zsh -l)
+exec $args
